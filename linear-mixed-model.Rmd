@@ -7,8 +7,6 @@ author: |
  | Yi Hao Xu, 
  | Shirin Amiraslani, 
  | Nga Nguyen
-date: |
- | MATH 4939
 output: pdf_document
 ---
 
