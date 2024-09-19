@@ -1,0 +1,856 @@
+---
+title: |
+  | **Traumatic Brain Injury and its Effect on the Corpus Callosum Relative to Aging**
+  | *An Approach Using Linear Mixed Models*
+author: |
+ | Edwin Cibotaru,
+ | Yi Hao Xu, 
+ | Shirin Amiraslani, 
+ | Nga Nguyen
+date: |
+ | MATH 4939
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+\newpage
+
+# 1. Introduction
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The dataset provided contains information on a variety of volumetric measurements regarding different brain regions, such as the ventricle-to-brain ratio and the total corpus callosum volume (denoted as CC_TOT), along with demographic variables and injury indicators represented by scores like the Glasgow Coma Scale (GCS). This dataset comprises two distinct groups: patients with traumatic brain injuries (TBI) of varying severities and control subjects who are injury-free, serving as a crucial baseline for comparing the patient group in terms of corpus callosum shrinkage relative to normal aging expectations. We chose to focus on the total corpus callosum volume as our response variable because we anticipate there to be notable shrinkage in this structure over time, particularly in response to injury.  In fact, a medical study stated that atrophy of the corpus callosum, for moderate to severe traumatic brain injury, is indeed a documented consequence  (Dev, 2011)\cite{1}. Therefore, we believe investigating this structure is of significant importance in our analysis.
+  
+Given our limited subject-matter knowledge (which is notably crucial in causal inference), the model we seek to construct is predictive in nature, hopefully accurately capturing key trends that we can focus on to answer our research questions (to be stated shortly below).
+  The goal of this project is to statistically explore trends using a linear mixed model. But why not simply ordinary regression? This is because we will see there is natural variation in slopes and intercepts from one individual to the next that we should not ignore, and simply regressing for each individual would not quite generalize to the overall population. With this in mind, there are two main research questions we wish to answer:
+  
+\begin{itemize}
+  \item [1.] What story does the fitted mixed model tell us overall? To be more precise, how can we interpret the parameters respecting the principle of marginality? What are the predicted trajectories for patients of various severities of injury compared to controls over time, and what do these trajectories evidently tell us?
+  \item [2.] Statistically, what is the gap between patients suffering severe TBI compared to controls? Is it getting wider or narrower? Are these gaps statistically significant at all?
+\end{itemize}
+
+With a clear vision of what we wish to achieve, we can now get to the first important step in our search for a suitable mixed model: exploratory data analysis.
+
+# 2. Tackling the Data
+## Part 1: Exploratory Data Analysis
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;In this section, we’ll construct plots to observe trends that stand out to us in the data, which we believe is useful in guiding us in choosing a particular structure for the mixed model. To start off, we will go through our approach to handling the data. This consisted of four steps:
+\begin{itemize}
+  \item \textbf{Data subsetting}: We divided data into two data sets: control and patient, which were explained in the introduction. After modifying each dataset we used rbind command to merge the two datasets. 
+  \item \textbf{Data cleaning}: As previously mentioned, a significant issue with our data was the presence of missing values (NAs) in many columns of interest. Due to our limited expertise in subject matter and the complexity of estimating these missing values, we made the decision to remove observations with missing data entirely from our analysis. As a result, our subsequent analyses will be conducted using this subset of the data, which contains adequate information for the variables of interest to run our analysis on.
+  \item \textbf{Variable transformation}: Additional informative columns are created and added to appropriate subsets. For instance, we utilized a patient's lowest Glasgow Coma (GC) score to add a categorical variable, injury.extent, which classifies the severity of injury. Individuals with a score of 3-8 were classified to have severe TBI, a score of 9-12 as moderate,  and a score of 13-15 as  mild TBI. Control groups are classified under the name “No Injury”. 
+  \item \textbf{Mindfulness}: We will be aware of common statistical errors taught in this course so far (i.e Simpson's paradox). Despite seeing interesting things marginally, conditioning on other variables may change this relationship entirely or even flip the sign. Simpson’s paradox also illustrates that conditional relationships may hold valuable insights, so finding the right variables to condition on is a key goal for us in this project.
+\end{itemize}
+
+### Marginal vs. Conditional Data
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;We first present an analysis of the total pooled data regarding the volume of Corpus Callosum total (CC_TOT) in relation to age. As shown in the plot "Volume of CC_TOT by Months Post Injury (Pooled Data)" without conditioning on any specific variables, the fitted line for this pooled data suggests no notable rate of shrinkage over time. Whereas, when conditioning on the individuals (ids), there appears to be some underlying patterns. To illustrate this more clearly, we will further condition on the previously defined variable injury.extent. The plot "Corpus Callosum Volume Conditioned on Injury Extent" shows the graph of CC_TOT versus age when conditioned on ids and injury.extent. Clearly, there seems to be a downward trend in the volume of CC_TOT for patients. This observation suggests that we are encountering Simpson's paradox, wherein the trend in the overall data set differs from the trends observed when analyzing the data set conditionally. Additionally, we opted to investigate the impact of injury severity on the rate of CC_TOT shrinkage. However, conditioning on injury severity highlights potential data insufficiency for patients with moderate or mild injuries, which highlights the importance of caution when developing our model.
+
+```{r, fig.width=8, fig.height=5, echo=FALSE}
+library(readxl)
+library(spida2)
+library(lattice)
+library(nlme)
+library(gridExtra)
+library(ggplot2)
+library(dplyr)
+
+
+
+tbi <- read_excel("/Users/apple/Downloads/TBI.xlsx")
+tbi <- as.data.frame(tbi)
+
+names(tbi) <- gsub("_(.)$", "__\\1", names(tbi))
+longtbi <- tolong(tbi, sep = "__")
+x <- subset(longtbi, subset = (group == "control"))
+y <- subset(longtbi, subset = (group == "patient"))
+
+#controls
+dat_c <- na.omit(data.frame(id = x["id"], sex = x["sex"], CC_TOT = x["CC_TOT"], age_years = x["age"]))
+dat_c$months.post.injury <- rep(0, 45)
+
+# patients
+dat_p <- na.omit(data.frame(id = y["id"], sex = y["sex"], CC_TOT = y["CC_TOT"], age_years = y["age"], 
+                            lowestgc = y["LowestGCSscore"], months_post = y["months.post.injury"]))
+
+
+# Creating injury extent for controls (none because none of them are injured)
+dat_c$injury.extent <- rep("No Injury", 45)
+
+# Creating injury extent for the patients
+injury.extent <- c()
+
+for (i in 1:202) {
+  
+  if (dat_p[i,"LowestGCSscore"] >= 3 && dat_p[i,"LowestGCSscore"] <= 8) {
+    injury.extent[i] <- "Severe Injury"
+  } else if (dat_p[i,"LowestGCSscore"] >= 9 && dat_p[i,"LowestGCSscore"] <= 12) {
+    injury.extent[i] <- "Moderate Injury"
+  } else {
+    injury.extent[i] <- "Mild Injury"
+  }
+}
+
+dat_p$injury.extent <- injury.extent
+
+dat_p <- subset(dat_p, select = -LowestGCSscore) # removing this from dat_p since it's unneeded
+
+
+# Creating column for sex for groups
+dat_c$sex <- ifelse(dat_c$sex == "1", "Male", "Female")
+dat_p$sex <- ifelse(dat_p$sex == "1", "Male", "Female")
+
+# Classifies the 2 groups
+dat_c$class <- rep("Control", 45)
+dat_p$class <- rep("Patient", 202)
+
+# categorizing months since injury for patients
+dat_p$months_cat <- cut(dat_p$months.post.injury,
+                        breaks = c(0, 3, 6, 12, 24, 32, 62),
+                        labels = c("0-3 Months since Injury", "3-6 Months since Injury", "6-12 Months since Injury", 
+                                   "1-2 Years since Injury", "2-3 Years since Injury", "More than 3 Years since Injury"),
+                        right = FALSE)
+
+dat_c$months_cat <- rep("No Injury", 45)
+
+# Combines the data
+dat<-rbind(dat_c, dat_p)
+#making the control group as the baseline for the injury.extent: 
+dat$injury.extent <- relevel(factor(dat$injury.extent), ref = "No Injury")
+
+# Combined data
+
+m <- lme(CC_TOT~age+months.post.injury*age+age*injury.extent, data=dat, 
+         random = ~1+age | id) 
+
+x<- dat[dat$id == 312, ]
+
+# Create an empty dataframe to store the result
+df <- data.frame()
+
+# Loop through each row of the original dataframe
+for (i in 1:nrow(x)) {
+  # Loop through each injury extent
+  for (extent in c("Mild Injury", "Moderate Injury", "Severe Injury", "No Injury")) {
+    
+    # Create a new row with the injury extent changed
+    new_row <- x[i, ]
+    if (extent == "No Injury"){
+      new_row$months.post.injury = 0
+    }
+    
+    new_row$injury.extent <- extent
+    # Bind the new row to the result dataframe
+    df <- rbind(df, new_row)
+  }
+}
+
+df$CC_TOT<-predict(m, newdata = df)
+
+df <- df[order(df$injury.extent), ]
+
+ids <- seq(1, 4)
+df$id <- rep(ids, each = 2)
+
+```
+
+```{r, fig.width=8, fig.height=5, echo=FALSE,fig.cap="Comparison between the pooled data (marginal) and conditional data"}
+###############################################################
+library(lattice)
+other<-xyplot(CC_TOT ~ age | injury.extent, groups = id, data = dat, 
+       xlab = "Age (years)", 
+       ylab = "Corpus Callosum Volume",  type = c('p', 'l'),
+       main="Corpus Callosum Volume Conditioned on Injury Extent")
+
+```
+
+```{r,fig.width=8, fig.height=5, echo=FALSE,fig.cap="Comparison between the pooled data (marginal) and conditional data" }
+###############################################################
+
+pool<-xyplot(CC_TOT ~ age, data = dat, 
+       xlab = "Age (years)", 
+       ylab = "Corpus Callosum Volume",  type = c('p', 'r'),
+       main="Volume of CC_TOT by Months Post Injury (Pooled)")
+
+#grid.arrange(pool, other, ncol=2)
+
+pool
+other
+```
+
+### Time-varying Terms:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The goal of this study is to compare the rate of shrinkage of CC_TOT between patients and controls. To achieve this, we have constructed a predictive model that relates volume of CC_TOT to age. By fitting lines to this model, we can determine the rate of shrinkage (slope) for each individual. In addition to age, we have included another time-varying variable called months.post.injury in our analysis. This variable was introduced to simplify our data handling by converting the large numerical values in the days.post.injury column into months. For controls, months.post.injury is assigned a value of 0, while for patients, it represents the number of months elapsed since the time of injury. The plot below displays a plot of CC_TOT against months.post.injury, revealing a downward trend in CC_TOT volume over time for each individual. Although the concurrent increase in age and months.post.injury may complicate interpretation, this plot suggests underlying patterns that justify the inclusion of months.post.injury in our model. By incorporating age and months.post.injury into our predictive model, we aim to better understand and quantify the rate of CC_TOT shrinkage over time for each individual, allowing us to differentiate between patients and controls according to their different patterns of change over time.
+
+```{r, fig.width=6, fig.height=4, echo=FALSE, fig.cap="Caption for the plot"}
+xyplot(CC_TOT ~ months.post.injury, groups = id, data = dat, 
+       xlab = "Months Post Injury", 
+       ylab = "Corpus Callosum Volume",  type = c('p', 'l'),
+       main="Volume of CC_TOT by Months Post Injury")
+```
+
+### Exclusion of Sex Variable:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Upon further examination of the plots conditioned on both sex and id, we found no significant difference in the rate of CC_TOT rate of  shrinkage between male and female individuals. This lack of distinction suggested that the variable of sex may not contribute substantially to explaining the variations in CC_TOT volume. As a result, we made the decision to exclude the sex variable from our model construction, aiming to simplify the model without sacrificing its explanatory power.
+
+```{r, fig.width=8, fig.height=5, echo=FALSE, fig.cap="Caption for the plot"}
+xyplot(CC_TOT ~ age | factor(sex), groups = id, data = dat, 
+       xlab = "Age (Years)", 
+       ylab = "Corpus Callosum Volume",  type = c('p', 'l'),
+       main="Volume of CC_TOT by Age")
+```
+
+### Exclusion of Years of Education: 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;We created a categorical variable “yoe” to examine the effect of years of education on the volume of CC_TOT. On average, it takes an individual 12 years to go from kindergarten to high school and an additional 6 years to complete college. We have categorized “yoe” into three distinct groups:
+
+\begin{itemize}
+  \item \textbf{Low}: Having less than 12 years of education
+  \item \textbf{Average}: Having 12 to 18 years of education
+  \item \textbf{High}: Having over 18 years of education
+\end{itemize}
+
+This classification system allows us to group individuals based on their educational duration. The plots below show the volume of CC_TOT versus age conditioned on ids and years of education. Based on the plots, it is evident that we lack sufficient data for certain categories within the variable "yoe" (years of education); for example, both male and female categories with high and low years of education lack enough data to rely our predictions on. Therefore, we made the decision to exclude this variable from our final model due to the data insufficiency and imbalance across categories.
+
+```{r, fig.width=9, fig.height=5, echo=FALSE, fig.cap="Caption for the plot"}
+library(readxl)
+library(spida2)
+library(lattice)
+library(ggplot2)
+library(gridExtra)
+library(nlme)
+
+
+tbi <- read_excel("/Users/apple/Downloads/TBI.xlsx")
+tbi_df<-as.data.frame(tbi) # makes TBI a data frame
+
+names(tbi_df) <- gsub("_(.)$", "__\\1", names(tbi))
+
+longtbi <- tolong(tbi_df, sep = "__", idvar = "SubID"); # converts tbi_df to long data format
+
+# subset the data on the basis of 'group' (can be either patient or control)
+x <- subset(longtbi, subset = (group == "control"))
+y <- subset(longtbi, subset = (group == "patient"))
+
+
+# we will have to omit NA values, as agreed upon. Here are the data frames that will be changed later on:
+dat_c <- na.omit(data.frame(id = x["id"], sex = x["sex"], CC_TOT = x["CC_TOT"], age_days = x["age_days"], 
+                            group = x["group"], age = x["age"], yoe=x["yoe"]))
+dat_p <- na.omit(data.frame(id = y["id"], sex = y["sex"], CC_TOT = y["CC_TOT"], days_post = y["days.post.injury"], 
+                            lowestgc = y["LowestGCSscore"], group = y["group"], age = y["age"], yoe=y["yoe"]))
+
+# Creating injury extent for controls (none because none of them are injured)
+dat_c$injury.extent <- rep("No Injury", 43)
+
+# Initialize injury.extent vector
+injury.extent <- character(nrow(dat_p))
+
+# Loop over rows of the data set and assign injury extent based on LowestGCSscore
+for (i in 1:nrow(dat_p)) {
+  if (!is.na(dat_p[i, "LowestGCSscore"])) {
+    if (dat_p[i, "LowestGCSscore"] >= 3 && dat_p[i, "LowestGCSscore"] <= 8) {
+      injury.extent[i] <- "Severe Injury"
+    } else if (dat_p[i, "LowestGCSscore"] >= 9 && dat_p[i, "LowestGCSscore"] <= 12) {
+      injury.extent[i] <- "Moderate Injury"
+    } else {
+      injury.extent[i] <- "Mild Injury"
+    }
+  } else {
+    injury.extent[i] <- NA  # Handle missing values appropriately
+  }
+}
+
+# Assign the injury.extent vector back to the data set if needed
+dat_p$injury.extent <- injury.extent
+
+# just checking to see what i'm working with
+minimum<-min(longtbi$yoe, na.rm = TRUE)
+maximum<-max(longtbi$yoe, na.rm = TRUE)
+
+# minimum yoe = 4, maximum yoe = 21
+# kindergarten to end of high school is normally 12 years
+# in america, it takes around 6 years on average to finish college
+
+# Let's use these groupings
+# low: 12 < yoe
+# average: 12-18 yoe
+# high: 18+ yoe
+
+# categorize yoe for controls
+yoe_cat_c <- c()
+
+for (i in 1:nrow(dat_c)) {
+  if (dat_c[i,"yoe"] >= minimum && dat_c[i,"yoe"] < 12) {
+    yoe_cat_c[i] <- "Low"
+  } else if (dat_c[i,"yoe"] >= 12 && dat_c[i,"yoe"] <= 18) {
+    yoe_cat_c[i] <- "Average"
+  } else {
+    yoe_cat_c[i] <- "High"
+  }
+}
+
+# categorize yoe for patients
+yoe_cat_p <- c()
+
+for (i in 1:nrow(dat_p)) {
+  if (dat_p[i,"yoe"] >= minimum && dat_p[i,"yoe"] < 12) {
+    yoe_cat_p[i] <- "Low"
+  } else if (dat_p[i,"yoe"] >= 12 && dat_p[i,"yoe"] <= 18) {
+    yoe_cat_p[i] <- "Average"
+  } else {
+    yoe_cat_p[i] <- "High"
+  }
+}
+
+time.since.first.obs <- 1:199
+
+for (i in unique(dat_p$id)) {
+  m <- min(subset(dat_p, subset = (id == i))["days.post.injury"], na.rm = TRUE)
+  for (j in 1:202) {
+    if (!is.na(dat_p[j, "id"]) && !is.na(dat_p[j, "days.post.injury"])) {
+      if ((dat_p[j, "id"] == i) & (dat_p[j,"days.post.injury"] == m)) {
+        time.since.first.obs[j] <- 0
+      } else if (dat_p[j, "id"] == i) {
+        time.since.first.obs[j] <- dat_p[j,"days.post.injury"] - m
+      }
+    }
+  }
+}
+
+dat_p["time.since.first.obs"] <- time.since.first.obs
+
+time.since.first.obs <- 1:43
+
+for (i in unique(dat_c$id)) {
+  m <- min(subset(dat_c, subset = (id == i))$age_days, na.rm = TRUE)
+  for (j in 1:45) {
+    if (!is.na(dat_c[j, "id"]) && !is.na(dat_c[j, "age_days"])) {
+      if ((dat_c[j, "id"] == i) & (dat_c[j, "age_days"] == m)) {
+        time.since.first.obs[j] <- 0
+      } else if (dat_c[j, "id"] == i) {
+        time.since.first.obs[j] <- dat_c[j, "age_days"] - m
+      }
+    }
+  }
+}
+
+dat_c["time.since.first.obs"] <- time.since.first.obs
+
+# plotting the data
+
+# check subsets for male and female patients
+dat_p_m <- subset(dat_p, sex == "1")
+dat_p_f <- subset(dat_p, sex == "2")
+
+patient_m<-xyplot(CC_TOT~time.since.first.obs | factor(yoe_cat_p)+injury.extent, groups = id, data = dat_p_m,
+                  xlab = "Days Since First Observation", ylab = "CC_TOT", main ="Male Patients with Low yoe",
+                  type = c('p', 'l'))
+
+patient_f<-xyplot(CC_TOT~time.since.first.obs | factor(yoe_cat_p)+injury.extent, groups = id, data = dat_p_f,
+                  xlab = "Days Since First Observation", ylab = "CC_TOT", main ="Female Patients with Low yoe",
+                  type = c('p', 'l'))
+
+# check subsets for male and female controls
+dat_c_m <- subset(dat_p, sex == "1")
+dat_c_f <- subset(dat_p, sex == "2")
+
+control_m<-xyplot(CC_TOT~time.since.first.obs | factor(yoe_cat_c), groups = id, data = dat_c_m,
+                  xlab = "Days Since First Observation", ylab = "CC_TOT", main ="Male Controls with Low yoe",
+                  type = c('p', 'l'))
+
+control_f<-xyplot(CC_TOT~time.since.first.obs | factor(yoe_cat_c), groups = id, data = dat_c_f,
+                  xlab = "Days Since First Observation", ylab = "CC_TOT", main ="Female Controls with Low yoe",
+                  type = c('p', 'l'))
+
+grid.arrange(patient_m, patient_f, ncol=2)
+
+grid.arrange(control_m, control_f, ncol=2)
+```
+
+## Part 2: Building the Mixed Model
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;We are dealing with two levels in our data set: the volume of CC_TOT is changing in observations for each id (within effect) and the volume of CC_TOT differs from one id to another (between effects). To capture the within and between effects more accurately, we will construct a linear mixed model. Our goal is to construct a model that allows the control group and patients with different severity of injury to have different slopes and intercepts. We will model the volume of Corpus Callosum as a function of age and months.post.injury. We will add an interaction term between age and the extent of injury to allow the linear models fitted for patients to have different slopes for each severity of injury. We also allow the variable months.post.injury to have an impact on the slope of our model by adding an interaction term between age and months.post.injury. 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;A linear mixed model without a contextual variable assumes that the in-between and the within effects are the same, which might not be necessarily true. Therefore we want to add  a contextual variable to the linear mixed model to ensure that we are accounting for the impact of Beta_within and Beta_between separately. One possible approach is to calculate the mean age across multiple observations for an individual; however, this contextual variable is contingent upon factors such as the patients’ availability for subsequent appointments and their adherence to scheduled check-ups. Consequently, including mean age as a contextual variable in the model could result in predictions being influenced by unrelated information. Alternatively, we define the age at the first observation for each id as our contextual variable: 
+
+```{r, echo=FALSE}
+age_first_obs <- capply(dat$age, dat$id, FUN=min)
+dat$age_first_obs <- age_first_obs 
+```
+
+### Random Part of the Model:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;As the plots in “Corpus Callosum Volume Conditioned on Injury Extent” (page 4) show, between individuals there is random variation in slopes and intercepts. Therefore, we will define the random part of the model as random ~ 1 + age to allow each individual to have a different slope and intercept than what is depicted by the fixed model. 
+
+### Autocorrelation:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;As we are dealing with longitudinal data, we would expect the residuals for each id to be autocorrelated. As the time intervals between observations for each id are not fixed, we decided to use a first-order continuous autoregressive correlation structure where the correlation between observations within each id is modeled based on the difference in their ages. Specifically, it assumes that the correlation between two observations decreases exponentially as the difference in their corresponding age values increases.
+
+### R Output:
+Finally we code our model in R:
+```{r, echo=FALSE}
+m <-lme(CC_TOT~age+months.post.injury*age+age*injury.extent + age_first_obs , data=dat, 
+              random = ~1 + age | id, correlation = corCAR1(form = ~ 1 + age | id)) 
+summary(m)
+```
+
+In our model, the volume of corpus callosum is modeled based on two time-varying terms: age and months.post.injury. Therefore, interpreting the coefficients of the model as outputted by R is quite complicated since we are dealing with partial derivatives of age and months.post.injury simultaneously. 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;In order to enhance our comprehension of the constructed model, we generated several arbitrary data sets. These data sets comprised individuals, both patients and controls, with identical ages and months post-injury but varying degrees of injury. Subsequently, we permitted these individuals to age, maintaining identical increments in age for both control and patient groups. Let us examine one of the data sets constructed below: 
+
+```{r, echo=FALSE}
+library(readxl)
+library(spida2)
+library(lattice)
+library(nlme)
+library(gridExtra)
+library(ggplot2)
+library(dplyr)
+
+
+tbi <- read_excel("/Users/apple/Downloads/TBI.xlsx")
+tbi <- as.data.frame(tbi)
+
+names(tbi) <- gsub("_(.)$", "__\\1", names(tbi))
+longtbi <- tolong(tbi, sep = "__")
+x <- subset(longtbi, subset = (group == "control"))
+y <- subset(longtbi, subset = (group == "patient"))
+
+#controls
+dat_c <- na.omit(data.frame(id = x["id"], sex = x["sex"], CC_TOT = x["CC_TOT"], age_years = x["age"]))
+dat_c$months.post.injury <- rep(0, 45)
+
+# patients
+dat_p <- na.omit(data.frame(id = y["id"], sex = y["sex"], CC_TOT = y["CC_TOT"], age_years = y["age"], 
+                            lowestgc = y["LowestGCSscore"], months_post = y["months.post.injury"]))
+
+
+# Creating injury extent for controls (none because none of them are injured)
+dat_c$injury.extent <- rep("No Injury", 45)
+
+# Creating injury extent for the patients
+injury.extent <- c()
+
+for (i in 1:202) {
+  
+  if (dat_p[i,"LowestGCSscore"] >= 3 && dat_p[i,"LowestGCSscore"] <= 8) {
+    injury.extent[i] <- "Severe Injury"
+  } else if (dat_p[i,"LowestGCSscore"] >= 9 && dat_p[i,"LowestGCSscore"] <= 12) {
+    injury.extent[i] <- "Moderate Injury"
+  } else {
+    injury.extent[i] <- "Mild Injury"
+  }
+}
+
+dat_p$injury.extent <- injury.extent
+
+dat_p <- subset(dat_p, select = -LowestGCSscore) # removing this from dat_p since it's unneeded
+
+
+# Creating column for sex for groups
+dat_c$sex <- ifelse(dat_c$sex == "1", "Male", "Female")
+dat_p$sex <- ifelse(dat_p$sex == "1", "Male", "Female")
+
+# Classifies the 2 groups
+dat_c$class <- rep("Control", 45)
+dat_p$class <- rep("Patient", 202)
+
+# categorizing months since injury for patients
+dat_p$months_cat <- cut(dat_p$months.post.injury,
+                        breaks = c(0, 3, 6, 12, 24, 32, 62),
+                        labels = c("0-3 Months since Injury", "3-6 Months since Injury", "6-12 Months since Injury", 
+                                   "1-2 Years since Injury", "2-3 Years since Injury", "More than 3 Years since Injury"),
+                        right = FALSE)
+
+dat_c$months_cat <- rep("No Injury", 45)
+
+# Combines the data
+dat<-rbind(dat_c, dat_p)
+#making the control group as the baseline for the injury.extent: 
+dat$injury.extent <- relevel(factor(dat$injury.extent), ref = "No Injury")
+
+# Combined data
+age_first_obs <- capply(dat$age, dat$id, FUN=min)
+dat$age_first_obs <- age_first_obs 
+
+m <-lme(CC_TOT~age+months.post.injury*age+age*injury.extent + age_first_obs , data=dat, 
+        random = ~1 + age | id, correlation = corCAR1(form = ~ 1 + age | id)) 
+
+x<- dat[dat$id == 312, ]
+
+# Create an empty dataframe to store the result
+df <- data.frame()
+
+# Loop through each row of the original dataframe
+for (i in 1:nrow(x)) {
+  # Loop through each injury extent
+  for (extent in c("Mild Injury", "Moderate Injury", "Severe Injury", "No Injury")) {
+    
+    # Create a new row with the injury extent changed
+    new_row <- x[i, ]
+    if (extent == "No Injury"){
+      new_row$months.post.injury = 0
+    }
+    
+    new_row$injury.extent <- extent
+    # Bind the new row to the result dataframe
+    df <- rbind(df, new_row)
+  }
+}
+df3 <- df 
+df2 <- df
+df$CC_TOT<-predict(m, newdata = df)
+
+df <- df[order(df$injury.extent), ]
+
+ids <- seq(1, 4)
+df$id <- rep(ids, each = 2)
+
+colors <- c("blue", "green", "red", "black")
+
+# Plot
+plot_m20<- xyplot(CC_TOT ~ age, groups = id, data = df, 
+                  xlab = "Age in years",
+                  ylab = "CC_TOT Volume Age ~ 20", type = c('p', 'l'),
+                  col=colors,
+                  grid=TRUE,
+                  auto.key = FALSE)
+
+
+
+##################################################################
+#plots for other ages age = 40 
+x<- dat[dat$id == 339, ]
+
+# Create an empty dataframe to store the result
+df <- data.frame()
+
+# Loop through each row of the original dataframe
+for (i in 1:nrow(x)) {
+  # Loop through each injury extent
+  for (extent in c("Mild Injury", "Moderate Injury", "Severe Injury", "No Injury")) {
+    
+    # Create a new row with the injury extent changed
+    new_row <- x[i, ]
+    if (extent == "No Injury"){
+      new_row$months.post.injury = 0
+    }
+    
+    new_row$injury.extent <- extent
+    # Bind the new row to the result dataframe
+    df <- rbind(df, new_row)
+  }
+}
+df3 <- df 
+df2 <- df
+df$CC_TOT<-predict(m, newdata = df)
+
+df <- df[order(df$injury.extent), ]
+
+ids <- seq(1, 4)
+df$id <- rep(ids, each = 2)
+
+colors <- c("blue", "green", "red", "black")
+
+# Plot
+plot_m40<- xyplot(CC_TOT ~ age, groups = id, data = df, 
+                  xlab = "Age in years",
+                  ylab = "CC_TOT Volume Age ~ 40", type = c('p', 'l'),
+                  col=colors,
+                  grid=TRUE,
+                  auto.key = FALSE)
+
+############################################################################
+#age = 60 
+#plots for other ages age = 40 
+x<- dat[dat$id == 457, ]
+
+# Create an empty dataframe to store the result
+df <- data.frame()
+
+# Loop through each row of the original dataframe
+for (i in 1:nrow(x)) {
+  # Loop through each injury extent
+  for (extent in c("Mild Injury", "Moderate Injury", "Severe Injury", "No Injury")) {
+    
+    # Create a new row with the injury extent changed
+    new_row <- x[i, ]
+    if (extent == "No Injury"){
+      new_row$months.post.injury = 0
+    }
+    
+    new_row$injury.extent <- extent
+    # Bind the new row to the result dataframe
+    df <- rbind(df, new_row)
+  }
+}
+
+df$CC_TOT<-predict(m, newdata = df)
+
+df <- df[order(df$injury.extent), ]
+
+ids <- seq(1, 4)
+df$id <- rep(ids, each = 3)
+
+colors <- c("blue", "green", "red", "black")
+
+# Plot
+plot_m65<- xyplot(CC_TOT ~ age, groups = id, data = df, 
+                  xlab = "Age in years",
+                  ylab = "CC_TOT Volume Age ~ 65", type = c('p', 'l'),
+                  col=colors,
+                  grid=TRUE,
+                  #key = list(columns = 1,
+                             #text = list(c("Mild Injury", "Moderate Injury", "No Injury", "Severe Injury")),
+                             #points = list(pch = 1, col = colors),
+                             #lines = list(col = colors)),
+                  auto.key = FALSE)
+
+
+############################################################################
+#age = 55
+x<- dat[dat$id == 452, ]
+
+# Create an empty dataframe to store the result
+df <- data.frame()
+
+# Loop through each row of the original dataframe
+for (i in 1:nrow(x)) {
+  # Loop through each injury extent
+  for (extent in c("Mild Injury", "Moderate Injury", "Severe Injury", "No Injury")) {
+    
+    # Create a new row with the injury extent changed
+    new_row <- x[i, ]
+    if (extent == "No Injury"){
+      new_row$months.post.injury = 0
+    }
+    
+    new_row$injury.extent <- extent
+    # Bind the new row to the result dataframe
+    df <- rbind(df, new_row)
+  }
+}
+
+df$CC_TOT<-predict(m, newdata = df)
+
+df <- df[order(df$injury.extent), ]
+
+ids <- seq(1, 4)
+df$id <- rep(ids, each = 3)
+
+colors <- c("blue", "green", "red", "black")
+
+# Plot
+plot_m55<- xyplot(CC_TOT ~ age, groups = id, data = df, 
+                  xlab = "Age in years",
+                  ylab = "CC_TOT Volume Age ~ 55", type = c('p', 'l'),
+                  main = " ",
+                  col=colors,
+                  grid=TRUE,
+                  auto.key = FALSE)
+##########################################################################
+#age = 47
+#plots for other ages age = 40 
+x<- dat[dat$id == 455, ]
+
+# Create an empty dataframe to store the result
+df <- data.frame()
+
+# Loop through each row of the original dataframe
+for (i in 1:nrow(x)) {
+  # Loop through each injury extent
+  for (extent in c("Mild Injury", "Moderate Injury", "Severe Injury", "No Injury")) {
+    
+    # Create a new row with the injury extent changed
+    new_row <- x[i, ]
+    if (extent == "No Injury"){
+      new_row$months.post.injury = 0
+    }
+    
+    new_row$injury.extent <- extent
+    # Bind the new row to the result dataframe
+    df <- rbind(df, new_row)
+  }
+}
+
+df$CC_TOT<-predict(m, newdata = df)
+
+df <- df[order(df$injury.extent), ]
+
+ids <- seq(1, 4)
+df$id <- rep(ids, each = 3)
+
+colors <- c("blue", "green", "red", "black")
+
+# Plot
+plot_m47<- xyplot(CC_TOT ~ age, groups = id, data = df, 
+                  xlab = "Age in years",
+                  ylab = "CC_TOT Volume Age ~ 45", type = c('p', 'l'),
+                  main = " ",
+                  col=colors,
+                  grid=TRUE,
+                  auto.key = FALSE)
+
+# LEGEND
+dummy_data <- data.frame(test = numeric(0), test2 = numeric(0))
+
+legend <- xyplot(test ~ test2, data = dummy_data, type = "n",
+                 scales = list(draw = FALSE), 
+                 xlab = "", ylab = "",          
+                 main = "Legend",
+                 key = list(columns = 1,
+                            text = list(c("Mild Injury", "Moderate Injury", "No Injury", "Severe Injury")),
+                                 points = list(pch = 16, cex = 1, col = colors),  # Larger points (symbols)
+                            lines = list(col = colors)),
+                 par.settings = list(axis.line = list(col = "transparent"),
+                                    strip.border = list(col = "transparent"), 
+                                    box.rectangle = list(col = "transparent"))) 
+
+x
+```
+
+Note that the months.post.injury is 0 for controls and injury.extent is ‘No injury’ for them. Then we use our model to make predictions of the volume of CC_TOT as the individuals in this data set age. We plot the predictions to examine the model’s output: 
+
+
+
+```{r, fig.width=9, fig.height=5, echo=FALSE}
+
+grid.arrange(plot_m20, plot_m40, ncol=2, top = 'Prediction Plots Based on Varying Injury Severity')
+grid.arrange(plot_m47, plot_m55, ncol=2)
+grid.arrange(plot_m65, legend, ncol = 2)
+```
+
+### Predictions:
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The plots above display a series of line plots depicting predictions based on the Mixed Model. Each plot illustrates the predicted CC_TOT volume for individuals with varying levels of injury, with control groups classified as ‘No Injury’. The age and months.post.injury are kept the same for each individual so that predictions only differ based on the level of injury. Note that the first prediction of the model is the volume of CC_TOT for the time of the first observation for each id. 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Notably, the CC_TOT volume of the control group is drawn in red. For younger individuals, the red line remains relatively flat, but as age increases, the slope gradually becomes negative. This means that as age increases, individuals in the control group have a higher rate of CC_TOT shrinkage and the rate of shrinkage can be quantified using the model’s coefficients for age.
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;To answer whether there is a difference between the rate of shrinkage of CC_TOT between controls and patients, we consider the slopes in each plot. Note that across all ages shown, the rate of CC_TOT shrinkage is consistently lower for the control group compared to patients. In other words, the slope showing the rate of shrinkage of CC_TOT is flatter for controls than that of patients. However, note that the order of lines representing CC_TOT volume for individuals with mild and moderate injuries might appear inconsistent—sometimes these lines are below and sometimes above the control group, which could be due to the lack of adequate data for these injuries; therefore, the model is incapable of providing consistent predictions for mild and moderate injuries. Most importantly, however, the control group consistently has a lower rate of shrinkage of CC_TOT when compared to patients and that is the main conclusion we rely on to answer the first research question in our report. 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;In the next section, we will examine the gap between the shrinkage of CC_TOT while varying age or months.post.injury for controls and patients.
+
+# 3. Investigating Corpus Callosum Volume Gaps using Wald Tests
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Now let’s recall the second research question we presented earlier: Statistically, what is the gap between patients suffering severe TBI compared to controls? Is it getting wider or narrower? Are these gaps statistically significant at all?
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;This is best answered using Wald tests. Recall that our model had a variety of predictors: one’s extent of injury (which will automatically determine whether they are patient or control), their months post injury (which is set to 0 for control subjects), and their age in years. To get an insight into what is going on between patients and controls, we will have to compare them at a variety of ages and months post injury (for patients), keeping constant the extent of injury at ‘Severe’. Because age and months post injury takes a variety of values, we will perform Wald tests at discrete combinations we think will yield a good picture; so, we will compare patients and controls at ages 20 and 60 (we are interested in young vs. old ultimately), at each age also allowing the patient’s months post injury to take values 5, 15, 25. This analysis is presented below. Here, we’ll assume that the age at first observation for each individual, regardless of whether they are a control or patient, is the age we are looking at itself (i.e., for a 20 year old individual, we will assume age at first observation is also 20 years).
+
+### Comparing severe TBI patients of 20 years of age and months post injury of 5 months to control subjects of the same age:
+```{r, echo=FALSE}
+# Combined data
+age_first_obs <- capply(dat$age, dat$id, FUN=min)
+dat$age_first_obs <- age_first_obs 
+
+m <-lme(CC_TOT~age+months.post.injury*age+age*injury.extent + age_first_obs , data=dat, 
+        random = ~1 + age | id, correlation = corCAR1(form = ~ 1 + age | id)) 
+
+age <- 20
+mpi <- 5
+
+#For patient:
+L1 = c(1, age, mpi, 0, 0, 1, age, age*mpi, 0, 0, age)
+
+#For control subject:
+L2 = c(1, age, 0, 0, 0, 0, age, 0, 0, 0, 0)
+
+wald(m, L1-L2)
+```
+The gap is large (about 82 units) and statistically significant (we regard a p-value less than 0.1 as small enough to conclude confidently that this result is likely not due to chance, under the null hypothesis that the gap equals 0 is true). Note that the gap is negative, which implies that a patient’s total corpus callosum volume is lower than that of a control subject
+
+### Comparing severe TBI patients of 20 years of age and months post injury of 15 months to control subjects of the same age:
+
+```{r, echo=FALSE}
+age <- 20
+mpi <- 15
+
+#For patient:
+L1 = c(1, age, mpi, 0, 0, 1, age, age*mpi, 0, 0, age)
+
+#For control subject:
+L2 = c(1, age, 0, 0, 0, 0, age, 0, 0, 0, 0)
+
+wald(m, L1-L2)
+```
+The estimated gap is more statistically significant since the p-value is smaller, and it has furthermore grown a noticeable amount. 
+
+### Comparing severe TBI patients of 20 years of age and months post injury of 25 months to control subjects of the same age:
+
+```{r, echo=FALSE}
+age <- 20
+mpi <- 25
+
+#For patient:
+L1 = c(1, age, mpi, 0, 0, 1, age, age*mpi, 0, 0, age)
+
+#For control subject:
+L2 = c(1, age, 0, 0, 0, 0, age, 0, 0, 0, 0)
+
+wald(m, L1-L2)
+```
+The gap is more statistically significant and has grown noticeably more here as well.
+
+But this is not all we can conclude from this output. Looking at what is going on, it does seem to make sense that the gap is negative, and that it is widening as the months post injury increases. Because the relationships are linear in nature (since we are keeping age and the age at first observation constant, therefore the interaction term in our model does not pose an issue), it implies the slopes differ, and therefore the rate of shrinkage differs too. Assuming months post injury is allowed to vary only here, since the gap is negative and widening, the slope for patients is actually steeper than the slope for controls (which is flat here, since months post injury cannot vary for control subjects), which makes sense to us.
+
+Now let’s do the same analysis for 60 year olds.
+
+### Comparing severe TBI patients of 60 years of age and months post injury of 5 months to control subjects of the same age:
+```{r, echo=FALSE}
+age <- 60
+mpi <- 5
+
+#For patient:
+L1 = c(1, age, mpi, 0, 0, 1, age, age*mpi, 0, 0, age)
+
+#For control subject:
+L2 = c(1, age, 0, 0, 0, 0, age, 0, 0, 0, 0)
+
+wald(m, L1-L2)
+```
+Interestingly, the estimated gap is smaller than what we saw in the case for mild TBI patients, but what is more obvious is the fact that the p-value is quite large.
+
+### Comparing severe TBI patients of 60 years of age and months post injury of 15 months to control subjects of the same age:
+```{r, echo=FALSE}
+age <- 60
+mpi <- 15
+
+#For patient:
+L1 = c(1, age, mpi, 0, 0, 1, age, age*mpi, 0, 0, age)
+
+#For control subject:
+L2 = c(1, age, 0, 0, 0, 0, age, 0, 0, 0, 0)
+
+wald(m, L1-L2)
+```
+The gap is now statistically significant, and it has widened quite a bit too.
+
+### Comparing severe TBI patients of 60 years of age and months post injury of 25 months to control subjects of the same age:
+```{r, echo=FALSE}
+age <- 60
+mpi <- 25
+
+#For patient:
+L1 = c(1, age, mpi, 0, 0, 1, age, age*mpi, 0, 0, age)
+
+#For control subject:
+L2 = c(1, age, 0, 0, 0, 0, age, 0, 0, 0, 0)
+
+wald(m, L1-L2)
+```
+The estimated gap has widened and is more statistically significant too. It therefore seems to be the same here: the line for patients (that is, the line you get allowing months post injury to change only) is steeper than the line for controls (which, again, is flat here, as months post injury cannot vary for controls).
+
+Overall, this analysis does raise an interesting question for us: Why, as months post injury increases, does the corpus callosum shrink at a faster rate (as measured by the slope) relative to the controls? Could it be due to the lack of technology for effectively treating such injuries? Could it simply mean that such shrinkage is unavoidable in general, regardless of the type of activity that led to the traumatic brain injury?
+
+# 4. Conclusion
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;To conclude, our analysis has provided us with valuable insights into the effects of TBI on corpus callosum volume shrinkage relative to aging. More specifically:
+
+\begin{itemize}
+  \item The prediction plots showed us that there exists a significant difference in the rate of shrinkage between the control and patient groups. In particular, we found this to be the case for patients with severe injuries.
+  \item We made comparisons between the control and patient groups with severe injuries at a variety of ages (20 and 60), and months post injury using Wald tests. These tests generally concluded that for patients with severe TBI, as months post injury increases, the gap between the volume of corpus callosum widens, in contrast to the control group. Generally, the gaps become more statistically significant.
+\end{itemize}
+
+Despite finding insightful results in our analysis, we have encountered several challenges:
+
+\begin{itemize}
+  \item \textbf{Missing Values (NAs)}: Our data set had a significant amount of missing values which limited the model’s capability to generate reliable predictions, specially for mild and moderate brain injuries. 
+  \item \textbf{Reliability}: The variable injury.extent was built based on the GS scores which are recorded in the Emergency Room. Therefore, we do not know how reliable it is to base the severity of the injury on GS scores. 
+  \item \textbf{Autocorrelation}: The lack of data points per individual significantly hindered our ability to provide a reliable estimate of the autocorrelation term.
+\end{itemize}
+
+
+\begin{thebibliography}{99}
+\bibitem{1} Trevor C. Wu, Elisabeth A. Wilde, Erin D. Bigler, Xiaoqi Li, Tricia L. Merkley, Ragini Yallampalli, Stephen R. McCauley, Kathleen P. Schnelle, Ana C. Vasquez, Zili Chu, Gerri Hanten, Jill V. Hunter, Harvey S. Levin;, Longitudinal Changes in the Corpus Callosum following Pediatric Traumatic Brain Injury., Dev Neurosci 1 February 2011; 32 (5-6): 361–373. https://doi.org/10.1159/000317058. 
+\end{thebibliography}
