@@ -42,6 +42,7 @@ Is this gap widening or narrowing over time, and are these differences statistic
 ## Methodology
 
 1. Tackling the Data
+   
 To guide our mixed model construction, we conducted exploratory data analysis with the following steps:
 
 - Data Subsetting: We created two datasets: one for control subjects and one for patients.
@@ -51,6 +52,7 @@ To guide our mixed model construction, we conducted exploratory data analysis wi
 - Variable Transformation: We categorized injury severity based on the lowest GCS score, creating a variable, injury.extent, with classifications for severe, moderate, and mild TBI, and labeled controls as “No Injury.”
 
 Exploratory Data Analysis
+
 We conducted analyses of CC_TOT against age and months post-injury, revealing key trends:
 
 - Volume of CC_TOT by Months Post Injury (Pooled): Without conditioning on specific variables, no notable rate of shrinkage was observed.
@@ -60,6 +62,7 @@ We conducted analyses of CC_TOT against age and months post-injury, revealing ke
 - Time-Varying Terms: By including months.post.injury, we explored shrinkage rates and observed significant trends indicating the necessity of this variable in our model.
 
 2. Building the Mixed Model
+   
 To account for the variability in CC_TOT across individuals, we constructed a linear mixed model. The model includes:
 
 - Random Effects: Allowing different slopes and intercepts for each individual to capture within-subject variations.
